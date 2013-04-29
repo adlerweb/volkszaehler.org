@@ -21,12 +21,6 @@
  * You can set your own scheme for all or specific datapoints at the
  * bottom of this file
  *
- * By default this script saves its state in /tmp/vzcompress2/. You may want
- * to move this files to a location that is not cleaned on reboot. If the files
- * are not present or caching is turned off the script will scan the complete
- * database. If you often insert/import historic data you may want to turn
- * this off. Configuration can be found near the end of this file.
- *
  * Database parameters are read from ../../etc/volkszaehler.conf.php
  *
  * @copyright Copyright (c) 2013, The volkszaehler.org project
@@ -57,7 +51,7 @@
   *
   * Absolute Path or relative to current workdir
   */
- define('VZCOMPRESS2_VZPATH', '../../');
+ define('VZCOMPRESS2_VZPATH', '/var/www/volkszaehler.org/');
  
  //Dummy VZ_DIR so volkszaehler.conf.php doesn't throw warnings
  if(!defined('VZ_DIR')) define('VZ_DIR', '');
@@ -89,13 +83,10 @@
         }
         
         if(!isset($config['verbose'])) $config['verbose']=true;
-        if(!isset($config['caching'])) $config['caching']=false;
-        if(!isset($config['sleep'])) $config['sleep']=0;
         
         $this->config = $config;
         $this->sql_config_load();
         $this->sql_connect();
-        $this->cache_init();
         $this->sql_getChannels();
         $this->json_getEntities();
         $this->compress();
@@ -118,7 +109,6 @@
     }
     
     private function sql_simplequery($qry) {
-        usleep($this->config['sleep']);
         if(!$stmt = $this->sql->prepare ($qry)) return false;
         if(!$stmt->execute()) {
             var_dump($stmt->errorInfo());
@@ -148,49 +138,15 @@
         $this->entities = json_decode($json);
     }
     
-    private function cache_init() {
-        if($this->config['caching']) {
-            if(substr($this->config['caching'], -1) != '/') $this->config['caching'].='/';
-            
-            if(file_exists($this->config['caching'])) {
-                if(!is_dir($this->config['caching'])) {
-                    trigger_error('Can not cache to '.$this->config['caching'].' - Not a directory', E_USER_WARNING);
-                    $this->config['caching'] = false;
-                }
-                if(!is_writable($this->config['caching'])) {
-                    trigger_error('Can not cache to'.$this->config['caching'].' - Not writable', E_USER_WARNING);
-                    $this->config['caching'] = false;
-                }
-            }else{
-                if(!mkdir($this->config['caching'], 0755, true)) {
-                    trigger_error('Can not cache to'.$this->config['caching'].' - Could not create directory', E_USER_WARNING);
-                    $this->config['caching'] = false;
-                }
-            }
-        }
-    }
-    
-    private function cache_write($chanid, $timebase, $last) {
-        if(!$this->config['caching']) return false;
-        if($timebase == 0 || $last == 0) return false;
-        file_put_contents($this->config['caching'].$chanid.'.'.$timebase, $last);
-    }
-    
-    private function cache_read($chanid, $timebase) {
-        if(!$this->config['caching']) return false;
-        if(!file_exists($this->config['caching'].$chanid.'.'.$timebase)) return false;
-        return (float)file_get_contents($this->config['caching'].$chanid.'.'.$timebase);
-    }
-    
     private function compress() {
         $start = time();
         foreach($this->channels as $channel) {
             if(isset($this->config['channels']) && !in_array($channel['id'], $this->config['channels'])) continue;
             
-            echo 'Processing Sensor ID '.$channel['id'].'...'."\n";
+            echo date("Y-m-d H:i:s", time()).' Processing Sensor ID '.$channel['id'].'...'."\n";
             $this->process($channel);
         }
-        echo 'Done. Purged '.$this->purgecounter.' Datapoints from '.count($this->channels).' Channels in '.(time()-$start).' Seconds'."\n";
+        echo date("Y-m-d H:i:s", time()).' Done. Purged '.$this->purgecounter.' Datapoints from '.count($this->channels).' Channels in '.(time()-$start).' Seconds'."\n";
     }
     
     private function process($channel) {
@@ -231,27 +187,19 @@
             if($cs[$times[$i]] == 0) continue;
             
             //Step 1: Detect oldest and newest dataset
-            $datatimes = $this->sql_simplequery("SELECT MIN(`timestamp`) as `min`, MAX(`timestamp`) as `max` FROM `data` WHERE `channel_id` =  '".$channel['id']."' AND `timestamp` <= '".(($timestamp-$times[$i])*1000)."' AND `timestamp` > '".(($times[$i+1] > 0) ? (($timestamp-$times[$i+1])*1000) : 0 )."'");
+            $datatimes = $this->sql_simplequery("SELECT MIN(`timestamp`) as `min`, MAX(`timestamp`) as `max` FROM `data` WHERE `channel_id` =  '".$channel['id']."' AND `timestamp` <= '".(($timestamp-$times[$i])*1000)."' AND `timestamp` > '".(($timestamp-$times[$i+1])*1000)."'");
             
             if((float)$datatimes[0]['max'] == 0) {
-                echo '  Skipping compression pass for datapoints between '.strftime("%d.%m.%Y %H:%M:%S", ($timestamp-$times[$i+1])).' and '.strftime("%d.%m.%Y %H:%M:%S", ($timestamp-$times[$i])).' using a '.$cs[$times[$i]].' second timeframe: No Datapoints found'."\n";
+                echo '  '.date("Y-m-d H:i:s", time()).' Skipping compression pass for datapoints between '.strftime("%d.%m.%Y %H:%M:%S", ($timestamp-$times[$i+1])).' and '.strftime("%d.%m.%Y %H:%M:%S", ($timestamp-$times[$i])).' using a '.$cs[$times[$i]].' second timeframe: No Datapoints found'."\n";
                 continue;
             }
             
-            //Caching
-            $lastrun = (float)$this->cache_read($channel['id'], $times[$i]);
-            if($lastrun && (float)$lastrun >= (float)$datatimes[0]['min']) {
-                echo '  Skipping datapoints between '.strftime("%d.%m.%Y %H:%M:%S", ((float)$datatimes[0]['min']/1000)).' and '.strftime("%d.%m.%Y %H:%M:%S", ((float)$lastrun/1000)).' (Cached)'."\n";
-                (float)$datatimes[0]['min'] = $lastrun;
-            }
-            
-            echo '  Compressing datapoints between '.strftime("%d.%m.%Y %H:%M:%S", ((float)$datatimes[0]['min']/1000)).' and '.strftime("%d.%m.%Y %H:%M:%S", ((float)$datatimes[0]['max']/1000)).' using a '.$cs[$times[$i]].' second timeframe'."\n";
+            echo '  '.date("Y-m-d H:i:s", time()).' Compressing datapoints between '.strftime("%d.%m.%Y %H:%M:%S", ((float)$datatimes[0]['min']/1000)).' and '.strftime("%d.%m.%Y %H:%M:%S", ((float)$datatimes[0]['max']/1000)).' using a '.$cs[$times[$i]].' second timeframe'."\n";
             
             //Step 2: Loop new possible timeframes
             $curtime = (float)$datatimes[0]['min'];
             $lastpurgecount = $this->purgecounter;
             $steps = (((float)$datatimes[0]['max']/1000)-((float)$datatimes[0]['min']/1000))/$cs[$times[$i]];
-            if($steps == 0) continue;
             $step = 0;
             $passstart = time();
             do {
@@ -287,11 +235,9 @@
                 
                 //Step 2.6 Commit to Database
                 $this->sql->commit();
-            
+                
             }while($curtime <= (float)$datatimes[0]['max']);
-            echo "\r    Removed ".($this->purgecounter-$lastpurgecount).' Datapoints in '.(time()-$passstart).' Seconds.                                  '."\n";
-            
-            $this->cache_write($channel['id'], $times[$i], (float)$datatimes[0]['max']);
+            echo "\r    ".date("Y-m-d H:i:s", time()).' Removed '.($this->purgecounter-$lastpurgecount).' Datapoints in '.(time()-$passstart).' Seconds.                                  '."\n";
         }
     }
  }
@@ -300,9 +246,7 @@
   * Sample Configuration
   */
  $config = array(
-    'verbose' => true,      //Show times/percentage - should be disables on slow TTYs
-    'caching' => '/tmp/vzcompress2/', //Path or false
-    'sleep' => 500000, //Microseconds to sleep between requests
+    'verbose' => false,      //Show times/percentage - should be disables on slow TTYs
     
     //'channels' => array(  //If defined only this channels are compressed
     //  '1', '2', '3'       //Note that IDs are strings
