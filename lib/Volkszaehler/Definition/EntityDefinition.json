@@ -318,5 +318,20 @@
 			"en" : "valve",
 			"fr" : "valve"
 		}
+	},
+	{
+		"name"			: "rain",
+		"required"		: ["resolution"],
+		"optional"		: ["tolerance", "local"],
+		"icon"			: "rain.png",
+		"unit"			: "mm",
+		"interpreter"		: "Volkszaehler\\Interpreter\\MeterInterpreter",
+		"model"			: "Volkszaehler\\Model\\Channel",
+		"hasConsumption"	: true,
+		"translation"		: {
+			"de" : "Niederschlag (Impulse)",
+			"en" : "Precipitation (pulses)",
+			"fr" : "Précipitation (impulsion)"
+		}
 	}
 ]
